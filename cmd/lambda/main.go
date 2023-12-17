@@ -5,16 +5,16 @@ import (
 	"fmt"
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/labstack/echo/v4"
 	"github.com/vcraescu/gsh-assessment/internal/adapters"
 	"github.com/vcraescu/gsh-assessment/internal/domain"
-	"github.com/vcraescu/gsh-assessment/internal/gateways/httpx"
-	"github.com/vcraescu/gsh-assessment/internal/httpserver"
+	"github.com/vcraescu/gsh-assessment/internal/gateways/http"
+	"github.com/vcraescu/gsh-assessment/pkg/echomw"
 	"github.com/vcraescu/gsh-assessment/pkg/log"
-	"github.com/vcraescu/gsh-assessment/web"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/sdk/trace"
 	"io"
-	"net/http"
+	stdhttp "net/http"
 	"net/http/httptest"
 	"strings"
 )
@@ -36,15 +36,17 @@ func main() {
 	}
 
 	svc := domain.NewOrderService(repository)
-	createOrderHandler := httpx.NewCreateOrderHandler(svc, logger)
-	healthzCheckHandler := httpx.NewHealthzCheckHandler()
 
-	srv := httpserver.NewTraced(httpserver.New(logger), tracer)
-	srv.Get("/", web.StaticHandler)
-	srv.Post("/orders", createOrderHandler)
-	srv.Get("/healthz", healthzCheckHandler)
+	e := echo.New()
+	e.HideBanner = true
+	e.HidePort = true
 
-	httpServer = httptest.NewServer(srv)
+	e.Use(echomw.WithTracer(tracer), echomw.WithLogger(logger))
+
+	e.GET("/healthz", http.NewHealthzHandler())
+	e.POST("/orders", http.NewCreateOrderHandler(svc, logger))
+
+	httpServer = httptest.NewServer(e)
 	defer httpServer.Close()
 
 	lambda.Start(handler)
@@ -58,7 +60,7 @@ func handler(ctx context.Context, in events.APIGatewayV2HTTPRequest) (events.API
 
 	req, err := apiGWRequestToHTTPRequest(ctx, in)
 	if err != nil {
-		return out, fmt.Errorf("lambdaRequestToHTTPRequest: %w", err)
+		return out, fmt.Errorf("apiGWRequestToHTTPRequest: %w", err)
 	}
 	defer req.Body.Close()
 
@@ -70,10 +72,10 @@ func handler(ctx context.Context, in events.APIGatewayV2HTTPRequest) (events.API
 	return httpResponseToAPIGWResponse(resp)
 }
 
-func apiGWRequestToHTTPRequest(ctx context.Context, in events.APIGatewayV2HTTPRequest) (*http.Request, error) {
+func apiGWRequestToHTTPRequest(ctx context.Context, in events.APIGatewayV2HTTPRequest) (*stdhttp.Request, error) {
 	rawURL := httpServer.URL + in.RawPath
 
-	req, err := http.NewRequestWithContext(ctx, in.RequestContext.HTTP.Method, rawURL, strings.NewReader(in.Body))
+	req, err := stdhttp.NewRequestWithContext(ctx, in.RequestContext.HTTP.Method, rawURL, strings.NewReader(in.Body))
 	if err != nil {
 		return nil, fmt.Errorf("newRequestWithContext: %w", err)
 	}
@@ -81,7 +83,7 @@ func apiGWRequestToHTTPRequest(ctx context.Context, in events.APIGatewayV2HTTPRe
 	return req, nil
 }
 
-func httpResponseToAPIGWResponse(resp *http.Response) (events.APIGatewayV2HTTPResponse, error) {
+func httpResponseToAPIGWResponse(resp *stdhttp.Response) (events.APIGatewayV2HTTPResponse, error) {
 	out := events.APIGatewayV2HTTPResponse{
 		StatusCode:        resp.StatusCode,
 		MultiValueHeaders: resp.Header,

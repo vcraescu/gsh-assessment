@@ -3,14 +3,19 @@ package main
 import (
 	"context"
 	_ "embed"
+	"errors"
+	"fmt"
+	"github.com/labstack/echo/v4"
 	"github.com/vcraescu/gsh-assessment/internal/adapters"
 	"github.com/vcraescu/gsh-assessment/internal/domain"
-	"github.com/vcraescu/gsh-assessment/internal/gateways/httpx"
-	"github.com/vcraescu/gsh-assessment/internal/httpserver"
+	"github.com/vcraescu/gsh-assessment/internal/gateways/http"
+	"github.com/vcraescu/gsh-assessment/pkg/echomw"
 	"github.com/vcraescu/gsh-assessment/pkg/log"
 	"github.com/vcraescu/gsh-assessment/web"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/sdk/trace"
+	"log/slog"
+	stdhttp "net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -30,7 +35,6 @@ func main() {
 		tracer = otel.Tracer("app")
 		logger = log.NewLogger()
 		ctx    = gracefulShutdown(context.Background(), logger)
-		srv    = httpserver.NewTraced(httpserver.New(logger), tracer)
 	)
 
 	defer tp.Shutdown(ctx)
@@ -41,15 +45,31 @@ func main() {
 	}
 
 	svc := domain.NewOrderService(repository)
-	createOrderHandler := httpx.NewCreateOrderHandler(svc, logger)
-	healthzCheckHandler := httpx.NewHealthzCheckHandler()
 
-	srv.Get("/", web.StaticHandler)
-	srv.Post("/orders", createOrderHandler)
-	srv.Get("/healthz", healthzCheckHandler)
+	e := echo.New()
+	e.HideBanner = true
+	e.HidePort = true
 
-	if err := httpserver.Start(ctx, logger, srv, serverAddress); err != nil {
-		panic(err)
+	e.Use(echomw.WithTracer(tracer), echomw.WithLogger(logger))
+
+	e.GET("/healthz", http.NewHealthzHandler())
+	e.POST("/orders", http.NewCreateOrderHandler(svc, logger))
+	e.StaticFS("/", web.FS)
+
+	go func() {
+		<-ctx.Done()
+
+		if err := e.Shutdown(ctx); err != nil {
+			logger.Error(ctx, "shutdown failed", log.Error(err))
+		}
+	}()
+
+	logger.Info(ctx, "server started", slog.String("address", serverAddress))
+
+	if err := e.Start(serverAddress); err != nil {
+		if !errors.Is(err, stdhttp.ErrServerClosed) {
+			panic(fmt.Errorf("start: %w", err))
+		}
 	}
 }
 

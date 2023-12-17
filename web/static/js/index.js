@@ -12,6 +12,7 @@ createApp({
 
             const xmlHttp = new XMLHttpRequest();
             xmlHttp.open("POST", "/orders", false);
+            xmlHttp.setRequestHeader("Content-Type", "application/json")
 
             xmlHttp.send(JSON.stringify({
                 quantity: quantity.value,

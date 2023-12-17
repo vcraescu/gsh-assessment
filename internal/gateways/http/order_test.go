@@ -1,25 +1,37 @@
-package httpx_test
+package http_test
 
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/labstack/echo/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vcraescu/gsh-assessment/internal/adapters"
 	"github.com/vcraescu/gsh-assessment/internal/domain"
-	"github.com/vcraescu/gsh-assessment/internal/gateways/httpx"
+	"github.com/vcraescu/gsh-assessment/internal/gateways/http"
+	"github.com/vcraescu/gsh-assessment/pkg/echomw"
 	"github.com/vcraescu/gsh-assessment/pkg/log"
 	"io"
-	"net/http"
+	stdhttp "net/http"
 	"net/http/httptest"
 	"testing"
 )
+
+type Context struct {
+	echo.Context
+
+	request *stdhttp.Request
+}
+
+func (c *Context) Request() *stdhttp.Request {
+	return c.request
+}
 
 func TestNewCreateOrderHandler(t *testing.T) {
 	t.Parallel()
 
 	type args struct {
-		req *http.Request
+		c echo.Context
 	}
 
 	tests := []struct {
@@ -32,28 +44,34 @@ func TestNewCreateOrderHandler(t *testing.T) {
 		{
 			name: "invalid request",
 			args: args{
-				req: newRequest(t, "test"),
+				c: &Context{
+					request: newRequest(t, "test"),
+				},
 			},
-			wantStatusCode: http.StatusBadRequest,
-			wantBody:       marshalJSON(t, httpx.ErrorResponse{Error: domain.ErrInvalidArgument.Error()}),
+			wantStatusCode: stdhttp.StatusBadRequest,
+			wantBody:       marshalJSON(t, echomw.ErrorResponse{Error: domain.ErrInvalidArgument.Error()}),
 		},
 		{
 			name: "empty request",
 			args: args{
-				req: newRequest(t, nil),
+				c: &Context{
+					request: newRequest(t, nil),
+				},
 			},
-			wantStatusCode: http.StatusBadRequest,
-			wantBody: marshalJSON(t, httpx.ErrorResponse{
+			wantStatusCode: stdhttp.StatusBadRequest,
+			wantBody: marshalJSON(t, echomw.ErrorResponse{
 				Error: "quantity must be greater than zero; got 0: invalid argument",
 			}),
 		},
 		{
 			name: "success",
 			args: args{
-				req: newRequest(t, httpx.CreateOrderRequest{Quantity: 251}),
+				c: &Context{
+					request: newRequest(t, http.CreateOrderRequest{Quantity: 251}),
+				},
 			},
-			wantStatusCode: http.StatusOK,
-			wantBody: marshalJSON(t, httpx.CreateOrderResponse{
+			wantStatusCode: stdhttp.StatusOK,
+			wantBody: marshalJSON(t, http.CreateOrderResponse{
 				Data: domain.Order{
 					Rows: []domain.OrderRow{
 						{
@@ -78,10 +96,11 @@ func TestNewCreateOrderHandler(t *testing.T) {
 			require.NoError(t, err)
 
 			svc := domain.NewOrderService(repo)
-			h := httpx.NewCreateOrderHandler(svc, logger)
+			h := http.NewCreateOrderHandler(svc, logger)
 
 			rec := httptest.NewRecorder()
-			err = h(rec, tt.args.req)
+			err = h(tt.args.c)
+
 			if tt.wantErr != nil {
 				tt.wantErr(t, err)
 
@@ -98,7 +117,7 @@ func TestNewCreateOrderHandler(t *testing.T) {
 	}
 }
 
-func newRequest(t *testing.T, body any) *http.Request {
+func newRequest(t *testing.T, body any) *stdhttp.Request {
 	t.Helper()
 
 	buf := &bytes.Buffer{}
@@ -108,10 +127,10 @@ func newRequest(t *testing.T, body any) *http.Request {
 		require.NoError(t, err)
 	}
 
-	return httptest.NewRequest(http.MethodGet, "http://example.com/test", buf)
+	return httptest.NewRequest(stdhttp.MethodGet, "http://example.com/test", buf)
 }
 
-func readBody(t *testing.T, resp *http.Response) []byte {
+func readBody(t *testing.T, resp *stdhttp.Response) []byte {
 	t.Helper()
 
 	b, err := io.ReadAll(resp.Body)
